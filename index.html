@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Magnolia Plant Counter</title>
+<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/ort.min.js"></script>
+<style>
+  *{box-sizing:border-box} body{margin:0;padding:12px;background:white;font-family:Arial,Helvetica,sans-serif;color:#17231d}
+  .card{max-width:560px;margin:auto;padding:28px 20px;background:#f1f5f1;border-radius:13px;text-align:center}
+  h1{font-size:26px;margin:0 0 14px} p{font-size:15px;margin:0 0 18px}
+  input{max-width:100%;margin-bottom:14px} button{background:#1f3d37;color:white;border:0;border-radius:8px;padding:13px 28px;font-size:15px;cursor:pointer}
+  button:disabled{background:#e2e4df;color:#a6aaa5;cursor:not-allowed}
+  #status{min-height:20px;margin:10px 0;color:#4d6055;font-size:13px}
+  .imageArea{position:relative;display:none;max-width:100%;margin:16px auto;background:#fff}
+  #photo{display:block;width:100%;height:auto;border-radius:6px}
+  #overlay{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+  #count{font-size:22px;font-weight:700;margin-top:20px}
+  .note{font-size:12px;color:#66736a;margin-top:12px}
+</style>
+</head>
+<body>
+<main class="card">
+ <h1>Magnolia Plant Counter</h1>
+ <p>Upload your nursery image</p>
+ <input id="fileInput" type="file" accept="image/png,image/jpeg">
+ <div class="imageArea" id="imageArea">
+   <img id="photo" alt="Magnolia nursery image preview">
+   <canvas id="overlay"></canvas>
+ </div>
+ <br><button id="countBtn" disabled>Count Plants</button>
+ <div id="status" role="status">Loading model…</div>
+ <div id="count" aria-live="polite">Total Plants: --</div>
+ <div class="note">Predictions are estimates; verify counts on dense, overlapping plants.</div>
+</main>
+<script>
+// Designed for a standard Ultralytics YOLO detection ONNX export without built-in NMS.
+// Standard tensor: [1, 4 + number_of_classes, detections], or transposed.
+// Verify your model's input/output shapes before relying on its predictions.
+const MODEL_URL = './best.onnx';
+const CONF = 0.30, IOU = 0.45;
+let model = null, fileURL = null;
+const input = document.getElementById('fileInput');
+const img = document.getElementById('photo');
+const canvas = document.getElementById('overlay');
+const button = document.getElementById('countBtn');
+const status = document.getElementById('status');
+const countEl = document.getElementById('count');
+const area = document.getElementById('imageArea');
+
+async function loadModel(){
+ try {
+   ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/';
+   model = await ort.InferenceSession.create(MODEL_URL, {executionProviders:['wasm']});
+   status.textContent = 'Model ready. Select a magnolia image.';
+   button.disabled = !img.complete || !img.naturalWidth;
+ } catch(e){
+   status.textContent = 'Cannot load best.onnx: ' + e.message;
+   console.error(e);
+ }
+}
+input.addEventListener('change', () => {
+ const file = input.files[0]; if(!file) return;
+ if(fileURL) URL.revokeObjectURL(fileURL);
+ fileURL = URL.createObjectURL(file);
+ img.onload = () => {
+   area.style.display = 'block';
+   canvas.width = img.naturalWidth; canvas.height = img.naturalHeight;
+   canvas.getContext('2d').clearRect(0,0,canvas.width,canvas.height);
+   button.disabled = !model;
+   countEl.textContent = 'Total Plants: --';
+ };
+ img.src = fileURL;
+});
+function intersectionOverUnion(a,b){
+ const x1=Math.max(a.x1,b.x1),y1=Math.max(a.y1,b.y1),x2=Math.min(a.x2,b.x2),y2=Math.min(a.y2,b.y2);
+ const inter=Math.max(0,x2-x1)*Math.max(0,y2-y1);
+ const aa=(a.x2-a.x1)*(a.y2-a.y1),bb=(b.x2-b.x1)*(b.y2-b.y1);
+ return inter/(aa+bb-inter+1e-9);
+}
+function nms(boxes){
+ boxes.sort((a,b)=>b.score-a.score);
+ const picked=[];
+ for(const b of boxes){
+   if(picked.every(p=>p.cls!==b.cls || intersectionOverUnion(b,p)<IOU)) picked.push(b);
+   if(picked.length>=500) break;
+ }
+ return picked;
+}
+// Resizing with letterboxing preserves the image proportions.
+function prepareImage(size){
+ const w=img.naturalWidth,h=img.naturalHeight;
+ const scale=Math.min(size/w,size/h);
+ const nw=Math.round(w*scale),nh=Math.round(h*scale);
+ const left=Math.floor((size-nw)/2),top=Math.floor((size-nh)/2);
+ const off=document.createElement('canvas');off.width=size;off.height=size;
+ const cx=off.getContext('2d',{willReadFrequently:true});
+ cx.fillStyle='rgb(114,114,114)';cx.fillRect(0,0,size,size);
+ cx.drawImage(img,left,top,nw,nh);
+ const pixels=cx.getImageData(0,0,size,size).data;
+ const plane=size*size, values=new Float32Array(plane*3);
+ for(let i=0;i<plane;i++){
+   values[i]=pixels[4*i]/255;
+   values[plane+i]=pixels[4*i+1]/255;
+   values[2*plane+i]=pixels[4*i+2]/255;
+ }
+ return {values,scale,left,top,w,h};
+}
+function decode(output,prep,size){
+ const shape=output.dims, data=output.data;
+ if(shape.length!==3||shape[0]!==1) throw Error('Unexpected output shape: '+shape.join('x')+'. Model-specific decoder needed.');
+ const a=shape[1], b=shape[2];
+ const channelsFirst=a<b, channels=channelsFirst?a:b, n=channelsFirst?b:a;
+ if(channels<5||channels>512) throw Error('Unsupported YOLO output shape: '+shape.join('x'));
+ // A standard Ultralytics detection export has 4 coordinates followed by per-class scores.
+ // NMS-enabled/end-to-end exports and older objectness-based exports need different decoding.
+ const value=(j,k)=>channelsFirst?data[k*n+j]:data[j*channels+k];
+ const proposals=[];
+ for(let j=0;j<n;j++){
+   let score=-Infinity,cls=-1;
+   for(let k=4;k<channels;k++) if(value(j,k)>score){score=value(j,k);cls=k-4;}
+   if(score<CONF)continue;
+   const cx=value(j,0),cy=value(j,1),bw=value(j,2),bh=value(j,3);
+   const x1=Math.max(0,(cx-bw/2-prep.left)/prep.scale);
+   const y1=Math.max(0,(cy-bh/2-prep.top)/prep.scale);
+   const x2=Math.min(prep.w,(cx+bw/2-prep.left)/prep.scale);
+   const y2=Math.min(prep.h,(cy+bh/2-prep.top)/prep.scale);
+   if(x2>x1&&y2>y1)proposals.push({x1,y1,x2,y2,score,cls});
+ }
+ return nms(proposals);
+}
+button.addEventListener('click',async()=>{
+ if(!model||!img.naturalWidth)return;
+ button.disabled=true;status.textContent='Counting plants…';
+ try{
+   const name=model.inputNames[0];
+   const metadata=model.inputMetadata?.[name];
+   const dims=metadata?.dimensions || metadata?.dims || [];
+   if(dims.length!==4)throw Error('Expected 4D YOLO image input; found '+JSON.stringify(dims));
+   if(dims[1]!==3)throw Error('Expected NCHW RGB image input [1,3,H,W].');
+   const height=Number(dims[2]),width=Number(dims[3]);
+   if(!Number.isInteger(height)||height!==width||height<32)throw Error('This example needs a square, fixed-size input model.');
+   const prep=prepareImage(width);
+   const tensor=new ort.Tensor('float32',prep.values,[1,3,height,width]);
+   const result=await model.run({[name]:tensor});
+   const boxes=decode(result[model.outputNames[0]],prep,width);
+   const cx=canvas.getContext('2d');cx.clearRect(0,0,canvas.width,canvas.height);
+   cx.lineWidth=Math.max(2,canvas.width/500);cx.font=`${Math.max(14,canvas.width/55)}px Arial`;
+   for(const b of boxes){
+     cx.strokeStyle='#00db65';cx.strokeRect(b.x1,b.y1,b.x2-b.x1,b.y2-b.y1);
+   }
+   countEl.textContent='Total Plants: '+boxes.length;
+   status.textContent='Completed. Green boxes show detected plants.';
+ }catch(e){status.textContent='Cannot count: '+e.message;console.error(e);}
+ finally{button.disabled=false;}
+});
+loadModel();
+</script>
+</body>
+</html>
