@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Magnolia Plant Counter</title>
+<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/ort.min.js"></script>
+<style>
+:root {font-family:Inter,system-ui,-apple-system,Segoe UI,Arial,sans-serif;color:#17352f;background:#f6f9f6}
+*{box-sizing:border-box} body{margin:0} .wrapper{max-width:1010px;margin:0 auto;padding:42px 20px 72px}
+h1{text-align:center;font-size:clamp(30px,4vw,46px);letter-spacing:-.035em;margin:0 0 9px} .subtitle{text-align:center;color:#657a70;margin:0 0 30px}
+.panel{background:white;border:1px solid #dae6df;border-radius:22px;padding:clamp(18px,3vw,34px);box-shadow:0 12px 40px rgba(13,51,36,.055)}
+.model-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-bottom:27px}
+.model{cursor:pointer;border:2px solid #dce8df;background:#fafcfb;border-radius:16px;min-height:116px;padding:20px;text-align:left;color:inherit;transition:.16s ease}
+.model:hover{border-color:#7ba88c}.model.active{border-color:#23754e;background:#eaf7ef;box-shadow:0 0 0 2px #d6f0df inset}
+.model strong{display:block;font-size:22px;margin-bottom:8px}.model small{font-size:14px;color:#577064}
+h2{font-size:20px;margin:0 0 14px}.upload{display:flex;align-items:center;justify-content:center;text-align:center;flex-direction:column;border:2px dashed #a6c4b2;border-radius:16px;background:#f8fcf9;padding:30px 16px;gap:8px}
+.upload p{margin:0;color:#4f685d}.upload small{color:#698075}.filebutton{background:#fff;border:1px solid #9bb9a5;padding:11px 18px;border-radius:9px;cursor:pointer;font-weight:650;color:#245d40}.filebutton:hover{background:#edf7ef}
+#imageInput{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}.preview-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:20px 0 12px}.preview-head h2{margin:0}.muted{font-size:13px;color:#657a70}
+.gallery{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px}.tile{border:1px solid #dce7df;border-radius:13px;overflow:hidden;background:#fff}.tile canvas{display:block;width:100%;height:auto;max-height:340px;object-fit:contain;background:#eaf0eb}.tile-info{display:flex;justify-content:space-between;gap:8px;align-items:center;padding:11px 12px}.filename{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:13px;max-width:70%}.tile-count{font-size:13px;color:#26734b;font-weight:700;white-space:nowrap}
+.actions{display:flex;align-items:center;justify-content:center;margin:27px 0 12px;gap:10px;flex-wrap:wrap}.primary{background:#23754e;border:0;border-radius:12px;padding:15px 34px;color:white;font-weight:750;font-size:17px;cursor:pointer;min-width:240px}.primary:hover:not(:disabled){background:#195c3b}.primary:disabled{opacity:.55;cursor:not-allowed}.secondary{background:white;color:#36684d;border:1px solid #a4c1ad;padding:14px 20px;border-radius:12px;cursor:pointer;font-weight:650}
+.results{text-align:center;background:#f1f8f2;border:1px solid #d8e8dc;border-radius:15px;padding:18px;margin-top:17px}.results span{display:block;color:#557568}.results strong{display:block;font-size:40px;margin:3px 0 0}.status{min-height:26px;margin:10px 0 0;text-align:center;font-size:14px;color:#526c5e;overflow-wrap:anywhere}.status.error{color:#ae3030}.note{font-size:12px;color:#6f8279;text-align:center;line-height:1.65;margin:17px 0 0}
+@media(max-width:580px){.model-grid{gap:10px}.model{min-height:100px;padding:15px}.model strong{font-size:18px}.wrapper{padding-top:25px}.gallery{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<main class="wrapper">
+<h1>Magnolia Plant Counter</h1>
+<p class="subtitle">Select a model, upload your images, and count detected plants.</p>
+<section class="panel">
+  <div class="model-grid" role="group" aria-label="Choose detection model">
+    <button class="model active" id="model1Button" type="button" aria-pressed="true"><strong>Model 1 (H)</strong><small>model1/best.onnx</small></button>
+    <button class="model" id="model2Button" type="button" aria-pressed="false"><strong>Model 2 (S)</strong><small>model2/best.onnx</small></button>
+  </div>
+  <h2>Choose Your Images</h2>
+  <div class="upload" id="dropzone">
+    <p><strong>Upload image(s) here</strong></p>
+    <p>Preview the images before counting.</p>
+    <label class="filebutton" for="imageInput">Choose Images</label>
+    <input type="file" id="imageInput" accept="image/jpeg,image/png,image/webp" multiple>
+    <small>JPG, PNG, WEBP • Single or multiple files supported</small>
+  </div>
+  <div id="previews" hidden>
+    <div class="preview-head"><h2>Image Preview</h2><span class="muted" id="imageCount"></span></div>
+    <div class="gallery" id="gallery"></div>
+  </div>
+  <div class="actions"><button type="button" class="primary" id="countButton" disabled>Count Plants</button><button type="button" class="secondary" id="clearButton">Clear Images</button></div>
+  <p class="status" id="status" role="status" aria-live="polite">Choose one or more images to begin.</p>
+  <div class="results" aria-live="polite"><span>Total Plants Detected</span><strong id="total">0</strong><span id="modelUsed">Model 1 (H)</span></div>
+  <p class="note">Runs in your browser using ONNX Runtime Web. Results depend on the selected trained model and its detection output format.</p>
+</section>
+</main>
+<script>
+'use strict';
+// IMPORTANT: Folder names and case must match exactly in GitHub.
+const MODEL_PATHS = {model1:'model1/best.onnx',model2:'model2/best.onnx'};
+const MODEL_LABELS = {model1:'Model 1 (H)',model2:'Model 2 (S)'};
+const CONFIDENCE_THRESHOLD = 0.35;
+const IOU_THRESHOLD = 0.50;
+const MAX_DETECTIONS = 1500;
+const MAX_INPUT_SIDE = 1280; // Guard against unexpectedly huge dynamic inputs.
+
+let selectedModel='model1';
+let files=[];
+let running=false;
+const sessions=new Map();
+const $=id=>document.getElementById(id);
+const buttons={model1:$('model1Button'),model2:$('model2Button')};
+function status(message,isError=false){$('status').textContent=message;$('status').classList.toggle('error',isError)}
+function refreshButtons(){
+ for(const [name,button] of Object.entries(buttons)){
+   button.classList.toggle('active',selectedModel===name);
+   button.setAttribute('aria-pressed',String(selectedModel===name));
+ }
+ $('modelUsed').textContent=MODEL_LABELS[selectedModel];
+}
+function resetResults(){ $('total').textContent='0'; $('modelUsed').textContent=MODEL_LABELS[selectedModel]; }
+for(const name of Object.keys(buttons))buttons[name].addEventListener('click',()=>{
+ if(running)return;
+ selectedModel=name;refreshButtons();resetResults();redrawAll();status(`${MODEL_LABELS[name]} selected. Click Count Plants to run it.`);
+});
+function setFiles(inputFiles){
+ if(running)return;
+ files=Array.from(inputFiles).filter(f=>f.type==='image/jpeg'||f.type==='image/png'||f.type==='image/webp').map(f=>({file:f,img:null,canvas:null,count:null}));
+ resetResults();$('gallery').replaceChildren();$('previews').hidden=!files.length;
+ $('imageCount').textContent=`${files.length} image${files.length===1?'':'s'} selected`;
+ $('countButton').disabled=!files.length;
+ if(!files.length){status('Choose JPG, PNG, or WEBP images.');return;}
+ for(const item of files){
+   const tile=document.createElement('div');tile.className='tile';
+   const canvas=document.createElement('canvas');canvas.width=480;canvas.height=300;
+   const info=document.createElement('div');info.className='tile-info';
+   const filename=document.createElement('span');filename.className='filename';filename.textContent=item.file.name;filename.title=item.file.name;
+   const count=document.createElement('span');count.className='tile-count';count.textContent='Ready';
+   info.append(filename,count);tile.append(canvas,info);$('gallery').append(tile);
+   item.canvas=canvas;item.countElement=count;
+   const url=URL.createObjectURL(item.file);const img=new Image();
+   img.onload=()=>{URL.revokeObjectURL(url);item.img=img;drawPreview(item)};
+   img.onerror=()=>{URL.revokeObjectURL(url);count.textContent='Cannot open'};
+   img.src=url;
+ }
+ status(`${files.length} image(s) ready. Select a model and click Count Plants.`);
+}
+$('imageInput').addEventListener('change',e=>{setFiles(e.target.files);e.target.value=''});
+$('clearButton').addEventListener('click',()=>{if(running)return;files=[];$('gallery').replaceChildren();$('previews').hidden=true;$('countButton').disabled=true;resetResults();status('Choose one or more images to begin.')});
+const zone=$('dropzone');
+zone.addEventListener('dragover',e=>{e.preventDefault()});
+zone.addEventListener('drop',e=>{e.preventDefault();if(e.dataTransfer?.files)setFiles(e.dataTransfer.files)});
+function drawPreview(item,detections=null){
+ if(!item.img||!item.canvas)return;
+ const img=item.img,canvas=item.canvas;
+ const scale=Math.min(1,800/Math.max(img.naturalWidth,img.naturalHeight));
+ canvas.width=Math.max(1,Math.round(img.naturalWidth*scale));canvas.height=Math.max(1,Math.round(img.naturalHeight*scale));
+ const ctx=canvas.getContext('2d');ctx.drawImage(img,0,0,canvas.width,canvas.height);
+ if(detections){
+   ctx.lineWidth=Math.max(2,Math.round(canvas.width/340));ctx.strokeStyle='#1ff072';
+   ctx.fillStyle='rgba(0,70,32,.75)';ctx.font=`${Math.max(12,Math.round(canvas.width/55))}px sans-serif`;
+   for(const d of detections){
+     const x=d.x1*canvas.width/img.naturalWidth,y=d.y1*canvas.height/img.naturalHeight;
+     const w=(d.x2-d.x1)*canvas.width/img.naturalWidth,h=(d.y2-d.y1)*canvas.height/img.naturalHeight;
+     ctx.strokeRect(x,y,w,h);const label=`Plant ${(d.score*100).toFixed(0)}%`;
+     const tw=ctx.measureText(label).width+10,lh=Math.max(18,Math.round(canvas.width/42));
+     ctx.fillRect(x,Math.max(0,y-lh),tw,lh);ctx.fillStyle='#fff';ctx.fillText(label,x+5,Math.max(lh-4,y-5));ctx.fillStyle='rgba(0,70,32,.75)';
+   }
+ }
+}
+function redrawAll(){for(const item of files){item.count=null;if(item.countElement)item.countElement.textContent='Ready';drawPreview(item)}}
+function loadImageReady(item){
+ if(item.img)return Promise.resolve(item.img);
+ return new Promise((resolve,reject)=>{
+   const started=Date.now();
+   const interval=setInterval(()=>{
+     if(item.img){clearInterval(interval);resolve(item.img)}
+     else if(Date.now()-started>12000){clearInterval(interval);reject(Error(`Could not load ${item.file.name}`))}
+   },50);
+ });
+}
+async function getSession(model){
+ if(sessions.has(model))return sessions.get(model);
+ const path=MODEL_PATHS[model];status(`Loading ${MODEL_LABELS[model]} from ${path} ...`);
+ // A different path for each model ensures the files are not confused.
+ const s=await ort.InferenceSession.create(path,{executionProviders:['wasm'],graphOptimizationLevel:'all'});
+ sessions.set(model,s);return s;
+}
+function getInputSize(session){
+ const name=session.inputNames[0],dims=session.inputMetadata?.[name]?.dimensions||session.inputMetadata?.[name]?.dims||[];
+ // Typical YOLO input: [1, 3, 640, 640]. Dynamic dimensions fall back to 640.
+ const h=Number.isInteger(dims[2])&&dims[2]>0?dims[2]:640;
+ const w=Number.isInteger(dims[3])&&dims[3]>0?dims[3]:640;
+ if(w>MAX_INPUT_SIDE||h>MAX_INPUT_SIDE)throw Error(`Model input ${w}×${h} is unusually large. Update MAX_INPUT_SIDE if expected.`);
+ if(dims.length&&dims.length!==4)throw Error(`Unsupported input shape: ${JSON.stringify(dims)}. Expected [1,3,height,width].`);
+ return {name,w,h};
+}
+function prepareTensor(img,w,h){
+ // Letterbox image: preserve proportions, add centered gray padding.
+ const ratio=Math.min(w/img.naturalWidth,h/img.naturalHeight);
+ const rw=Math.max(1,Math.round(img.naturalWidth*ratio)),rh=Math.max(1,Math.round(img.naturalHeight*ratio));
+ const dx=Math.floor((w-rw)/2),dy=Math.floor((h-rh)/2);
+ const cv=document.createElement('canvas');cv.width=w;cv.height=h;
+ const ctx=cv.getContext('2d',{willReadFrequently:true});ctx.fillStyle='rgb(114,114,114)';ctx.fillRect(0,0,w,h);ctx.drawImage(img,dx,dy,rw,rh);
+ const rgba=ctx.getImageData(0,0,w,h).data;const plane=w*h;const chw=new Float32Array(plane*3);
+ for(let i=0;i<plane;i++){chw[i]=rgba[i*4]/255;chw[plane+i]=rgba[i*4+1]/255;chw[plane*2+i]=rgba[i*4+2]/255}
+ return {tensor:new ort.Tensor('float32',chw,[1,3,h,w]),ratio,dx,dy,w,h};
+}
+function clamp(v,a,b){return Math.max(a,Math.min(b,v))}
+function overlap(a,b){
+ const x=Math.max(0,Math.min(a.x2,b.x2)-Math.max(a.x1,b.x1));
+ const y=Math.max(0,Math.min(a.y2,b.y2)-Math.max(a.y1,b.y1));
+ const inter=x*y,areaA=Math.max(0,a.x2-a.x1)*Math.max(0,a.y2-a.y1),areaB=Math.max(0,b.x2-b.x1)*Math.max(0,b.y2-b.y1);
+ return inter/(areaA+areaB-inter+1e-9);
+}
+function suppress(boxes){
+ boxes.sort((a,b)=>b.score-a.score);
+ // Limit the work in very dense scenes; adjust if needed for your dataset.
+ const selected=[];
+ for(const box of boxes){if(selected.length>=MAX_DETECTIONS)break;if(selected.every(k=>overlap(k,box)<=IOU_THRESHOLD))selected.push(box)}
+ return selected;
+}
+function decodeOutput(outputs,prep,img){
+ const tensors=Object.values(outputs);if(!tensors.length)throw Error('Model returned no output.');
+ // Standard YOLOv8 / YOLO11 raw output is [1, 4+classes, boxes].
+ // Some exports transpose to [1, boxes, 4+classes].
+ // Common pre-NMS and end-to-end exports also have [boxes,6]: x1,y1,x2,y2,conf,class.
+ const out=tensors[0],dims=out.dims,data=out.data;
+ if(!dims||!data)throw Error('Model did not return a numeric tensor.');
+ let rows,channels,at,format='raw';
+ if(dims.length===3&&dims[0]===1){
+   const a=dims[1],b=dims[2];
+   if(a>=5&&a<=256&&b>a){channels=a;rows=b;at=(r,c)=>data[c*rows+r]}
+   else if(b>=5&&b<=256){channels=b;rows=a;at=(r,c)=>data[r*channels+c]}
+   else throw Error(`Unsupported YOLO output shape [${dims}].`);
+ } else if(dims.length===2){rows=dims[0];channels=dims[1];at=(r,c)=>data[r*channels+c]}
+ else throw Error(`Unsupported output shape [${dims}]. Expected [1,C,N], [1,N,C], or [N,6].`);
+ if(channels<5)throw Error(`Output has only ${channels} channels.`);
+ // Six-channel output can be either an end-to-end [x1,y1,x2,y2,confidence,class]
+ // or raw [cx,cy,w,h,scoreClass0,scoreClass1].
+ // Distinguish with plausibility checks; for ambiguous 6-channel raw outputs, adapt as needed.
+ if(channels===6){
+   let looksEndToEnd=0,checked=0;
+   for(let r=0;r<Math.min(rows,32);r++){
+     const c=at(r,5),x1=at(r,0),y1=at(r,1),x2=at(r,2),y2=at(r,3);
+     if(Number.isFinite(c)&&Math.abs(c-Math.round(c))<0.001&&c>=0&&c<200&&x2>=x1&&y2>=y1)looksEndToEnd++;
+     checked++;
+   }
+   if(checked&&looksEndToEnd/checked>.8)format='nms';
+ }
+ const W=img.naturalWidth,H=img.naturalHeight;
+ const detections=[];
+ for(let r=0;r<rows;r++){
+   let x1,y1,x2,y2,score;
+   if(format==='nms'){
+     x1=at(r,0);y1=at(r,1);x2=at(r,2);y2=at(r,3);score=at(r,4);
+   }else{
+     // YOLOv8/YOLO11: 4 boxes + class probabilities; no separate objectness.
+     // YOLOv5 exports with an objectness channel require a separate parser.
+     const cx=at(r,0),cy=at(r,1),bw=at(r,2),bh=at(r,3);
+     score=0;for(let k=4;k<channels;k++)score=Math.max(score,at(r,k));
+     x1=cx-bw/2;y1=cy-bh/2;x2=cx+bw/2;y2=cy+bh/2;
+   }
+   if(!Number.isFinite(score)||score<CONFIDENCE_THRESHOLD)continue;
+   // Some exported NMS models output normalized coordinates.
+   if(format==='nms'&&Math.max(Math.abs(x1),Math.abs(x2),Math.abs(y1),Math.abs(y2))<=1.01){x1*=prep.w;x2*=prep.w;y1*=prep.h;y2*=prep.h}
+   x1=clamp((x1-prep.dx)/prep.ratio,0,W);x2=clamp((x2-prep.dx)/prep.ratio,0,W);
+   y1=clamp((y1-prep.dy)/prep.ratio,0,H);y2=clamp((y2-prep.dy)/prep.ratio,0,H);
+   if(x2>x1&&y2>y1)detections.push({x1,y1,x2,y2,score});
+ }
+ return suppress(detections);
+}
+$('countButton').addEventListener('click',async()=>{
+ if(running||!files.length)return;
+ running=true;$('countButton').disabled=true;$('clearButton').disabled=true;
+ for(const b of Object.values(buttons))b.disabled=true;
+ resetResults();let total=0,successes=0;
+ try{
+   if(typeof ort==='undefined')throw Error('ONNX Runtime did not load. Check internet access and try again.');
+   const model=selectedModel;
+   const session=await getSession(model);
+   const {name,w,h}=getInputSize(session);
+   for(let i=0;i<files.length;i++){
+     const item=files[i];status(`${MODEL_LABELS[model]}: processing image ${i+1} of ${files.length} — ${item.file.name}`);
+     try{
+       const img=await loadImageReady(item);
+       const prep=prepareTensor(img,w,h);
+       const outputs=await session.run({[name]:prep.tensor});
+       const detections=decodeOutput(outputs,prep,img);
+       item.count=detections.length;total+=item.count;successes++;
+       item.countElement.textContent=`${item.count} plant${item.count===1?'':'s'}`;
+       drawPreview(item,detections);$('total').textContent=String(total);
+     }catch(e){item.countElement.textContent='Error';console.error('Image inference failed:',item.file.name,e);status(`${item.file.name}: ${e.message}`,true)}
+   }
+   $('modelUsed').textContent=`${MODEL_LABELS[model]} · ${successes}/${files.length} images processed`;
+   if(successes===files.length)status(`Finished. ${total} plants detected across ${successes} image(s).`);
+   else status(`Finished with errors: ${successes}/${files.length} processed. Open browser Console (F12) for details.`,true);
+ }catch(e){console.error('Model failed:',e);status(`Could not run ${MODEL_LABELS[selectedModel]}: ${e.message}. Verify the ONNX path and model format.`,true)}
+ finally{running=false;$('countButton').disabled=!files.length;$('clearButton').disabled=false;for(const b of Object.values(buttons))b.disabled=false}
+});
+refreshButtons();
+</script>
+</body>
+</html>
