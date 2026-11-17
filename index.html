@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Browser-based Magnolia plant detection and counting with two ONNX models.">
+  <meta name="theme-color" content="#f7f9f7">
+  <title>Magnolia Plant Counter | Two-Model Demo</title>
+  <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/ort.min.js"></script>
+  <style>
+    :root{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;color:#1e3128;background:#f7f9f7;font-synthesis:none}
+    *{box-sizing:border-box}body{margin:0}button,input{font:inherit}button{cursor:pointer}a{color:#245b42}
+    .wrap{max-width:1150px;margin:auto;padding:32px 22px 65px}header{padding:14px 0 27px;border-bottom:1px solid #dae4da}
+    .eyebrow{color:#397455;text-transform:uppercase;font-weight:700;letter-spacing:.12em;font-size:12px}h1{font-size:clamp(29px,4vw,44px);line-height:1.14;letter-spacing:-.045em;margin:9px 0 12px}header p{max-width:730px;line-height:1.65;color:#56685b;margin:0}
+    .section-title{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:30px 0 14px}.section-title h2{margin:0;font-size:21px}.pill{border-radius:99px;background:#e3eee6;color:#285b40;padding:6px 12px;font-size:12px;font-weight:750}
+    .tabs{display:flex;gap:10px;margin-bottom:14px}.tab{border:1px solid #cbdace;background:white;border-radius:9px;padding:12px 20px;color:#47624e;font-weight:700}.tab[aria-selected=true]{background:#246443;color:white;border-color:#246443}.tab:focus-visible,button:focus-visible{outline:3px solid #5cbf7f;outline-offset:2px}
+    .workspace{display:grid;grid-template-columns:340px minmax(0,1fr);gap:17px}.panel{background:#fff;border:1px solid #dce7dd;border-radius:16px;padding:24px;box-shadow:0 8px 25px rgba(30,60,35,.035);min-width:0}.panel h3{font-size:17px;margin:0 0 15px}.mini{font-size:13px;color:#617469;line-height:1.6}
+    .dropzone{display:block;border:2px dashed #adcbb5;border-radius:12px;padding:27px 15px;text-align:center;background:#f6faf7;cursor:pointer}.dropzone:hover,.dropzone.drag{background:#eaf5ed;border-color:#35794f}.dropzone strong{display:block;margin-bottom:8px}.dropzone span{display:block;color:#63776a;font-size:13px;line-height:1.6}.dropzone input{position:absolute;opacity:0;width:1px;height:1px}
+    .files{margin:12px 0;max-height:150px;overflow:auto}.file{padding:8px 10px;background:#f2f6f2;margin:5px 0;border-radius:7px;font-size:12px;overflow-wrap:anywhere}.file button{float:right;background:none;color:#7d3838;border:0;font-size:13px}
+    .control-row{margin:15px 0 10px}.control-row label{display:flex;justify-content:space-between;font-size:13px;font-weight:700;margin-bottom:6px}.control-row input{width:100%;accent-color:#26764a}.primary{border:0;background:#216843;color:white;padding:13px 16px;border-radius:9px;font-weight:750;width:100%}.primary:hover:not(:disabled){background:#185335}button:disabled{cursor:not-allowed;opacity:.55}
+    .status{background:#f1f6f2;border-radius:8px;padding:10px 12px;line-height:1.55;color:#365a42;font-size:13px;margin:13px 0}.status.error{background:#fff0ef;color:#96352e}.status.ok{background:#e9f6ed;color:#1e6a3d}
+    .preview-top{display:flex;justify-content:space-between;gap:10px;align-items:center}.preview-top h3{margin:0}.empty{min-height:330px;border:1px dashed #d3ded5;background:#f9fbf9;border-radius:10px;display:flex;align-items:center;justify-content:center;flex-direction:column;text-align:center;color:#718477;padding:20px}.empty svg{opacity:.5;margin-bottom:12px}.empty h3{color:#3f5a48;margin:0 0 6px}.image-cards{display:flex;flex-direction:column;gap:16px;margin-top:15px}.image-card{border:1px solid #e0e9e1;border-radius:11px;overflow:hidden}.image-card canvas{display:block;width:100%;height:auto;background:#edf1ed}.image-head{display:flex;justify-content:space-between;padding:10px 12px;gap:10px;overflow-wrap:anywhere;font-size:13px;background:#f6f9f6}.image-head span{white-space:nowrap;font-weight:700;color:#256e47}
+    .metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:15px 0}.metric{background:#edf6f0;border-radius:10px;padding:12px}.metric small{display:block;color:#5c7565;font-size:12px}.metric strong{display:block;font-size:26px;margin-top:5px;overflow-wrap:anywhere}.metric strong.sm{font-size:17px;margin-top:10px}
+    .downloads{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin-top:15px}.secondary{border:1px solid #cbdcce;border-radius:8px;background:#fff;padding:9px 14px;font-weight:700;color:#265b3c}.secondary:hover:not(:disabled){background:#eef6f0}.progress{height:8px;border-radius:10px;background:#e4eee5;overflow:hidden;margin-top:13px}.progress div{height:100%;background:#398759;width:0%;transition:width .15s}
+    .explain{margin-top:25px;background:white;border:1px solid #dce7dd;border-radius:14px;padding:22px;line-height:1.7;color:#52665a}.explain h2{font-size:20px;color:#1e3128;margin-top:0}.explain code{font-size:13px;background:#edf3ef;padding:2px 5px;border-radius:4px}.explain p{margin:8px 0}
+    footer{font-size:12px;color:#78887e;margin-top:25px}.hidden{display:none!important}
+    @media(max-width:780px){.workspace{grid-template-columns:1fr}.wrap{padding:22px 13px 50px}.panel{padding:17px}.metrics{grid-template-columns:1fr 1fr}.tabs .tab{flex:1}}
+  </style>
+</head>
+<body>
+<main class="wrap">
+  <header>
+    <div class="eyebrow">Research demonstration</div>
+    <h1>Magnolia Plant Detection<br>and Quantification</h1>
+    <p>Detect and count plants in overhead nursery photographs using either of your two ONNX detection models. Choose a model, upload images, inspect numbered bounding boxes, and download results. Inference runs in your browser.</p>
+  </header>
+  <div class="section-title"><h2>Interactive counter</h2><span class="pill">640 × 640 · ONNX Runtime</span></div>
+  <div class="tabs" role="tablist" aria-label="Choose detection model">
+    <button id="tab1" class="tab" type="button" role="tab" aria-selected="true" aria-controls="workspace">Model 1</button>
+    <button id="tab2" class="tab" type="button" role="tab" aria-selected="false" aria-controls="workspace">Model 2</button>
+  </div>
+  <section id="workspace" class="workspace" aria-label="Plant counting workspace">
+    <aside class="panel">
+      <h3>Choose your images</h3>
+      <label class="dropzone" id="dropzone" for="file"><strong>📁 Upload images</strong><span>Click here, or drag and drop files</span><span>JPEG, PNG, WebP · multiple files supported</span><input id="file" type="file" accept="image/jpeg,image/png,image/webp" multiple></label>
+      <div id="files" class="files" aria-live="polite"></div>
+      <div class="control-row"><label for="confidence">Confidence threshold <span id="confidenceValue">0.25</span></label><input id="confidence" type="range" min="0.05" max="0.95" value="0.25" step="0.05"></div>
+      <button id="analyze" class="primary" type="button" disabled>Count Magnolia plants</button>
+      <div id="status" class="status" role="status" aria-live="polite">Loading Model 1…</div>
+      <div class="progress" aria-label="Processing progress"><div id="progress"></div></div>
+      <p class="mini">Selected model: <strong id="modelLabel">Model 1</strong><br>Model path: <code id="modelPath">model1/best.onnx</code></p>
+    </aside>
+    <div class="panel">
+      <div class="preview-top"><h3>Detection results</h3><span id="size" class="mini">No image selected</span></div>
+      <div id="empty" class="empty"><svg width="55" height="55" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="3" width="20" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m2 17 6-6 4 4 3-3 7 7"/></svg><h3>Upload an image to begin</h3><p>Use Model 1 or Model 2, then click Count Magnolia plants.</p></div>
+      <div id="results" class="hidden">
+        <div class="metrics"><div class="metric"><small>Plants detected</small><strong id="count">0</strong></div><div class="metric"><small>Box coverage</small><strong id="coverage">0%</strong></div><div class="metric"><small>Model used</small><strong class="sm" id="sourceValue">Model 1</strong></div></div>
+        <p id="notes" class="mini"></p>
+        <div id="imageCards" class="image-cards"></div>
+        <div class="downloads"><strong style="font-size:13px;margin-right:6px">Download results</strong><button type="button" id="csv" class="secondary">CSV</button><button type="button" id="json" class="secondary">JSON</button><button type="button" id="png" class="secondary">Annotated PNGs</button></div>
+      </div>
+    </div>
+  </section>
+  <section class="explain"><h2>Method and limitations</h2><p>Each uploaded image is letterboxed to <strong>640 × 640</strong>, normalized to RGB float values, and passed as an NCHW tensor <code>[1, 3, 640, 640]</code> to the selected ONNX model. Bounding boxes are filtered by confidence and non-maximum suppression (IoU 0.45).</p><p>Designed for standard, non-end-to-end Ultralytics YOLO detection exports with raw boxes and class scores. Models exported with embedded NMS, segmentation heads, custom output layouts, or a different fixed input size may require code changes. Count accuracy depends on the trained model. Dense plants in very large aerial images may require tiled inference for better results. Coverage is the union of predicted rectangles, not true canopy coverage.</p><p>Your files stay on your device during inference; model files are fetched from the site host. No model evaluation claims are made by this demo.</p></section>
+  <footer>Magnolia Plant Counter · Browser-based two-model demonstration</footer>
+</main>
+<script>
+'use strict';
+// Keep index.html at the repository root; place each best.onnx inside its matching folder.
+const INPUT_SIZE = 640;
+const IOU_THRESHOLD = 0.45;
+const MODELS = {model1:'./model1/best.onnx', model2:'./model2/best.onnx'};
+const $ = id => document.getElementById(id);
+const state = {selected:'model1',sessions:{},pending:{},files:[],working:false,results:[]};
+const status = (message,isError=false,ok=false) => { $('status').textContent=message; $('status').className='status'+(isError?' error':ok?' ok':''); };
+const setButton = () => { $('analyze').disabled=state.working || !state.files.length || !state.sessions[state.selected]; };
+const modelName = key => key==='model1'?'Model 1':'Model 2';
+function updateTabs(){
+  $('tab1').setAttribute('aria-selected',String(state.selected==='model1'));
+  $('tab2').setAttribute('aria-selected',String(state.selected==='model2'));
+  $('modelLabel').textContent=modelName(state.selected);
+  $('modelPath').textContent=MODELS[state.selected].replace('./','');
+  if(state.sessions[state.selected])status(modelName(state.selected)+' ready — upload an image to count.',false,true);
+  setButton();
+}
+function dimsFromMeta(session){
+  const name=session.inputNames[0];
+  const md=session.inputMetadata;
+  let meta;
+  // Different ONNX Runtime Web builds expose metadata differently.
+  if(Array.isArray(md))meta=md[0]; else if(md && typeof md==='object')meta=md[name];
+  return meta?.dimensions ?? meta?.dims ?? meta?.shape ?? null;
+}
+function assertShape(session){
+  if(session.inputNames.length!==1)throw Error('This demo expects one image input, but the ONNX model has '+session.inputNames.length+' inputs.');
+  const dims=dimsFromMeta(session);
+  if(dims && dims.length!==4)throw Error('Model input has '+dims.length+' dimensions; expected NCHW [1,3,640,640].');
+  if(dims && dims.length===4){
+    const wanted=[1,3,INPUT_SIZE,INPUT_SIZE];
+    dims.forEach((v,i)=>{if(typeof v==='number' && v>0 && v!==wanted[i])throw Error('ONNX input shape is ['+dims.join(', ')+'] but this website sends [1,3,640,640]. Re-export the model at imgsz=640 with batch=1 or adapt the HTML.');});
+  }
+}
+async function loadModel(key){
+  if(state.sessions[key])return state.sessions[key];
+  if(state.pending[key])return state.pending[key];
+  state.pending[key]=(async()=>{
+    if(typeof ort==='undefined')throw Error('ONNX Runtime Web did not load. Check internet access or CDN blocking.');
+    ort.env.wasm.numThreads=1;
+    ort.env.wasm.wasmPaths='https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/';
+    const url=MODELS[key];
+    // Browser fetches ONNX bytes from GitHub Pages; load errors surface in status.
+    const res=await fetch(url);
+    if(!res.ok)throw Error('Cannot find '+url+' (HTTP '+res.status+'). Verify spelling best.onnx and GitHub Pages deployment.');
+    const data=await res.arrayBuffer();
+    const session=await ort.InferenceSession.create(data,{executionProviders:['wasm'],graphOptimizationLevel:'all'});
+    assertShape(session);
+    state.sessions[key]=session;
+    return session;
+  })();
+  try{return await state.pending[key];}finally{delete state.pending[key];}
+}
+async function selectModel(key){
+  if(state.working)return;
+  state.selected=key;state.results=[];$('results').classList.add('hidden');$('empty').classList.remove('hidden');
+  updateTabs();
+  if(state.sessions[key])return;
+  status('Loading '+modelName(key)+' from '+MODELS[key]+'…');
+  try{await loadModel(key);if(state.selected===key)status(modelName(key)+' loaded successfully.',false,true);}catch(e){if(state.selected===key)status(modelName(key)+': '+e.message,true);console.error(e);}
+  setButton();
+}
+$('tab1').addEventListener('click',()=>selectModel('model1'));
+$('tab2').addEventListener('click',()=>selectModel('model2'));
+$('confidence').addEventListener('input',()=>$('confidenceValue').textContent=Number($('confidence').value).toFixed(2));
+function addFiles(list){
+  for(const f of list){if(!f.type.startsWith('image/'))continue;if(!state.files.some(x=>x.name===f.name&&x.size===f.size&&x.lastModified===f.lastModified))state.files.push(f);}
+  renderFiles();
+}
+function renderFiles(){
+  $('files').replaceChildren();
+  state.files.forEach((f,i)=>{const line=document.createElement('div');line.className='file';const name=document.createElement('span');name.textContent=f.name;const remove=document.createElement('button');remove.textContent='✕';remove.type='button';remove.setAttribute('aria-label','Remove '+f.name);remove.disabled=state.working;remove.onclick=()=>{state.files.splice(i,1);renderFiles();};line.append(name,remove);$('files').append(line);});
+  $('size').textContent=state.files.length?`${state.files.length} image(s) selected`:'No image selected';setButton();
+}
+$('file').addEventListener('change',e=>{addFiles(e.target.files);e.target.value='';});
+['dragenter','dragover'].forEach(ev=>$('dropzone').addEventListener(ev,e=>{e.preventDefault();$('dropzone').classList.add('drag');}));
+['dragleave','drop'].forEach(ev=>$('dropzone').addEventListener(ev,e=>{e.preventDefault();$('dropzone').classList.remove('drag');}));
+$('dropzone').addEventListener('drop',e=>addFiles(e.dataTransfer.files));
+async function readImage(file){
+  const url=URL.createObjectURL(file);
+  try{const img=new Image();img.src=url;await img.decode();return img;}finally{URL.revokeObjectURL(url);}
+}
+function makeInput(img){
+  const S=INPUT_SIZE, W=img.naturalWidth,H=img.naturalHeight;
+  const scale=Math.min(S/W,S/H);const rw=Math.round(W*scale),rh=Math.round(H*scale);
+  const left=Math.floor((S-rw)/2),top=Math.floor((S-rh)/2);
+  const canvas=document.createElement('canvas');canvas.width=canvas.height=S;
+  const ctx=canvas.getContext('2d',{willReadFrequently:true});
+  ctx.fillStyle='rgb(114,114,114)';ctx.fillRect(0,0,S,S);ctx.drawImage(img,left,top,rw,rh);
+  const pixels=ctx.getImageData(0,0,S,S).data;const n=S*S;const data=new Float32Array(3*n);
+  for(let i=0;i<n;i++){data[i]=pixels[i*4]/255;data[n+i]=pixels[i*4+1]/255;data[2*n+i]=pixels[i*4+2]/255;}
+  return {tensor:new ort.Tensor('float32',data,[1,3,S,S]),scale,left,top,W,H};
+}
+function sigmoid(x){return 1/(1+Math.exp(-x));}
+function parseYolo(tensor,pre,threshold){
+  const d=tensor.dims;
+  if(d.length!==3 || d[0]!==1)throw Error('Unsupported YOLO output shape ['+d.join(',')+']. Expected [1,4+classes,N] or [1,N,4+classes] raw output.');
+  // YOLOv8/v11 raw output is typically [1,4+C,N] with C>=1; sometimes transposed.
+  let transposed;
+  if(d[1]>=5 && d[1]<=512 && d[2]>d[1])transposed=false;
+  else if(d[2]>=5 && d[2]<=512 && d[1]>d[2])transposed=true;
+  else throw Error('Cannot identify raw YOLO box axes in ['+d.join(',')+']. This may be an NMS/end-to-end output.');
+  const cols=transposed?d[2]:d[1],num=transposed?d[1]:d[2];
+  const at=(i,j)=>transposed?tensor.data[i*cols+j]:tensor.data[j*num+i];
+  if(cols<5)throw Error('No class score in YOLO output; this model needs custom decoding.');
+  const found=[];
+  for(let i=0;i<num;i++){
+    let confidence=-Infinity;for(let j=4;j<cols;j++)confidence=Math.max(confidence,at(i,j));
+    if(!Number.isFinite(confidence)||confidence<threshold)continue;
+    const cx=at(i,0),cy=at(i,1),bw=at(i,2),bh=at(i,3);
+    if(![cx,cy,bw,bh].every(Number.isFinite)||bw<=0||bh<=0)continue;
+    const x1=Math.max(0,Math.min(pre.W,(cx-bw/2-pre.left)/pre.scale));
+    const y1=Math.max(0,Math.min(pre.H,(cy-bh/2-pre.top)/pre.scale));
+    const x2=Math.max(0,Math.min(pre.W,(cx+bw/2-pre.left)/pre.scale));
+    const y2=Math.max(0,Math.min(pre.H,(cy+bh/2-pre.top)/pre.scale));
+    if(x2>x1&&y2>y1)found.push({x1,y1,x2,y2,confidence});
+  }
+  return nms(found,IOU_THRESHOLD);
+}
+function iou(a,b){const iw=Math.max(0,Math.min(a.x2,b.x2)-Math.max(a.x1,b.x1));const ih=Math.max(0,Math.min(a.y2,b.y2)-Math.max(a.y1,b.y1));const inter=iw*ih;const aArea=(a.x2-a.x1)*(a.y2-a.y1),bArea=(b.x2-b.x1)*(b.y2-b.y1);return inter/(aArea+bArea-inter||1);}
+function nms(boxes,limit){boxes.sort((a,b)=>b.confidence-a.confidence);const picked=[];while(boxes.length&&picked.length<2500){const best=boxes.shift();picked.push(best);boxes=boxes.filter(b=>iou(b,best)<=limit);}return picked;}
+// Rectangle union area via horizontal sweep; avoids double-counting overlaps.
+function unionArea(boxes){
+  if(!boxes.length)return 0;
+  const xs=[...new Set(boxes.flatMap(b=>[b.x1,b.x2]))].sort((a,b)=>a-b);let area=0;
+  for(let i=1;i<xs.length;i++){
+    const min=xs[i-1],max=xs[i];if(max===min)continue;
+    const ys=boxes.filter(b=>b.x1<max&&b.x2>min).map(b=>[b.y1,b.y2]).sort((a,b)=>a[0]-b[0]);
+    let covered=0,lo=null,hi=null;for(const [a,b] of ys){if(lo===null){lo=a;hi=b;}else if(a>hi){covered+=hi-lo;lo=a;hi=b;}else{hi=Math.max(hi,b);}}
+    if(lo!==null)covered+=hi-lo;area+=(max-min)*covered;
+  }
+  return area;
+}
+function paint(img,boxes){const c=document.createElement('canvas');c.width=img.naturalWidth;c.height=img.naturalHeight;const g=c.getContext('2d');g.drawImage(img,0,0);const lw=Math.max(2,Math.round(Math.min(c.width,c.height)/400));const fs=Math.max(14,Math.round(Math.min(c.width,c.height)/65));g.lineWidth=lw;g.font='bold '+fs+'px system-ui';boxes.forEach((b,i)=>{g.strokeStyle='#00c766';g.strokeRect(b.x1,b.y1,b.x2-b.x1,b.y2-b.y1);const txt=String(i+1);const w=g.measureText(txt).width+12;g.fillStyle='#145c35';g.fillRect(b.x1,Math.max(0,b.y1-fs-9),w,fs+9);g.fillStyle='white';g.fillText(txt,b.x1+6,Math.max(fs,b.y1-5));});return c;}
+function downloadBlob(content,type,name){const blob=content instanceof Blob?content:new Blob([content],{type});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),3000);}
+function safeName(s){return s.replace(/\.[^.]+$/,'').replace(/[^a-zA-Z0-9_-]+/g,'_').slice(0,75)||'image';}
+async function processAll(){
+  if(state.working||!state.files.length)return;
+  const key=state.selected;state.working=true;setButton();$('progress').style.width='0%';$('imageCards').replaceChildren();
+  $('results').classList.add('hidden');$('empty').classList.add('hidden');state.results=[];
+  try{
+    status('Preparing '+modelName(key)+'…');const session=await loadModel(key);const threshold=Number($('confidence').value);
+    let total=0,coverageNumerator=0,pixels=0,failed=0;
+    for(let i=0;i<state.files.length;i++){
+      const f=state.files[i];status('Analyzing '+(i+1)+'/'+state.files.length+': '+f.name);
+      try{
+        const img=await readImage(f);const pre=makeInput(img);
+        const output=await session.run({[session.inputNames[0]]:pre.tensor});
+        if(session.outputNames.length!==1)throw Error('Expected one YOLO detection output; received '+session.outputNames.length+'.');
+        const boxes=parseYolo(output[session.outputNames[0]],pre,threshold);
+        const area=unionArea(boxes);const annotated=paint(img,boxes);
+        const result={filename:f.name,width:pre.W,height:pre.H,boxes,area,canvas:annotated,model:modelName(key)};state.results.push(result);
+        total+=boxes.length;coverageNumerator+=area;pixels+=pre.W*pre.H;
+        const card=document.createElement('div');card.className='image-card';
+        const head=document.createElement('div');head.className='image-head';const name=document.createElement('strong');name.textContent=f.name;const ct=document.createElement('span');ct.textContent=boxes.length+' plants';head.append(name,ct);card.append(head,annotated);$('imageCards').append(card);
+      }catch(e){failed++;console.error(f.name,e);const card=document.createElement('div');card.className='file';card.textContent=f.name+': '+e.message;$('imageCards').append(card);}
+      $('progress').style.width=((i+1)/state.files.length*100).toFixed(0)+'%';await new Promise(r=>setTimeout(r,0));
+    }
+    $('count').textContent=total.toLocaleString();$('coverage').textContent=pixels?(100*coverageNumerator/pixels).toFixed(1)+'%':'—';$('sourceValue').textContent=modelName(key);
+    $('notes').textContent=state.results.length+' image(s) processed successfully'+(failed?' · '+failed+' failed':'')+'. Coverage represents combined box area across processed images.';
+    $('results').classList.remove('hidden');
+    status(failed?'Finished with '+failed+' error(s). Review messages beside images.':'Done — '+total+' plant detection(s) across '+state.results.length+' image(s).',!!failed,!failed);
+  }catch(e){status(e.message,true);console.error(e);$('empty').classList.remove('hidden');}
+  finally{state.working=false;setButton();renderFiles();}
+}
+$('analyze').addEventListener('click',processAll);
+$('csv').addEventListener('click',()=>{const rows=['model,image,plant_number,x1,y1,x2,y2,confidence'];for(const r of state.results){r.boxes.forEach((b,i)=>rows.push([r.model,JSON.stringify(r.filename),i+1,b.x1.toFixed(2),b.y1.toFixed(2),b.x2.toFixed(2),b.y2.toFixed(2),b.confidence.toFixed(5)].join(',')));}downloadBlob(rows.join('\n'),'text/csv','magnolia_detections.csv');});
+$('json').addEventListener('click',()=>downloadBlob(JSON.stringify(state.results.map(({canvas,...r})=>r),null,2),'application/json','magnolia_detections.json'));
+$('png').addEventListener('click',()=>{state.results.forEach((r,i)=>r.canvas.toBlob(blob=>{if(blob)downloadBlob(blob,'image/png',safeName(r.filename)+'_'+r.model.replace(/\s/g,'')+'_annotated.png');},'image/png'));});
+selectModel('model1');
+</script>
+</body>
+</html>
