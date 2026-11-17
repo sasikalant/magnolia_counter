@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Magnolia Plant Counter — Two Models</title>
+  <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/ort.min.js"></script>
+  <style>
+    :root { color-scheme: light; --green: #176344; --pale: #eef7f1; --ink: #19332a; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: Arial, sans-serif; background: #f5f8f5; color: var(--ink); }
+    header { background: var(--green); color: white; padding: 24px 16px; text-align: center; }
+    header h1 { margin: 0 0 8px; font-size: 27px; }
+    header p { margin: 0; }
+    main { max-width: 950px; margin: 24px auto; padding: 0 14px 30px; }
+    .panel { background: white; border: 1px solid #d9e5dc; border-radius: 14px; padding: 22px; box-shadow: 0 3px 16px #143b2410; }
+    .tabs { display: flex; gap: 10px; margin-bottom: 18px; }
+    .tab { flex: 1; padding: 13px; border: 2px solid #b8d2c0; border-radius: 10px; cursor: pointer; font-weight: bold; background: white; color: var(--green); }
+    .tab[aria-selected="true"] { background: var(--green); color: white; border-color: var(--green); }
+    .label { display: block; margin: 12px 0 7px; font-weight: bold; }
+    input[type=file] { width: 100%; padding: 11px; background: var(--pale); border-radius: 8px; }
+    button.run { margin-top: 15px; padding: 12px 22px; font-size: 16px; background: var(--green); color: white; border: none; border-radius: 9px; cursor: pointer; }
+    button.run:disabled { opacity: .6; cursor: wait; }
+    #status { min-height: 22px; margin: 14px 0; white-space: pre-wrap; }
+    #status.error { color: #a31919; }
+    .results { display: flex; flex-wrap: wrap; gap: 16px; margin: 10px 0; }
+    .stat { flex: 1; min-width: 135px; background: var(--pale); border-radius: 9px; padding: 16px; }
+    .stat strong { display: block; font-size: 34px; margin-top: 4px; }
+    .preview { overflow: auto; margin-top: 16px; text-align: center; background: #edf1ed; border-radius: 10px; min-height: 180px; padding: 10px; }
+    canvas { max-width: 100%; height: auto; }
+    .hint { font-size: 13px; color: #53695a; line-height: 1.5; }
+  </style>
+</head>
+<body>
+<header>
+  <h1>🌿 Magnolia Plant Counter</h1>
+  <p>Select a model, upload a drone image, and count detected plants.</p>
+</header>
+<main>
+  <section class="panel">
+    <div class="tabs" role="tablist" aria-label="Choose detection model">
+      <button class="tab" role="tab" id="tab1" aria-selected="true" aria-controls="modelPanel" data-model="model1">Model 1</button>
+      <button class="tab" role="tab" id="tab2" aria-selected="false" aria-controls="modelPanel" data-model="model2">Model 2</button>
+    </div>
+    <div id="modelPanel" role="tabpanel" aria-labelledby="tab1">
+      <h2 id="heading">Model 1 — Magnolia Counter</h2>
+      <p id="modelPath" class="hint">Model file: model1/best.onnx</p>
+      <p class="hint">Model input: <strong>1 × 3 × 640 × 640</strong> (RGB, NCHW). Uploaded images are resized with padding.</p>
+      <label class="label" for="photos">Choose an image (or multiple images)</label>
+      <input id="photos" type="file" accept="image/*" multiple>
+      <button class="run" id="countBtn">Count Plants</button>
+      <p id="status" role="status">Ready. Select a picture and click Count Plants.</p>
+      <div class="results">
+        <div class="stat">Plants in shown image<strong id="count">—</strong></div>
+        <div class="stat">Total across images<strong id="total">—</strong></div>
+      </div>
+      <div id="gallery"></div>
+      <p class="hint">This page uses 640 × 640 input for both models and supports standard YOLOv8 / YOLO11 detection ONNX exports with raw boxes. Model 2 must use a compatible detection output; segmentation, custom postprocessing, or tiled inference require changes.</p>
+    </div>
+  </section>
+</main>
+<script>
+'use strict';
+// IMPORTANT: Paths are relative to the repository's root index.html.
+// GitHub structure: index.html, model1/best.onnx, model2/best.onnx
+const MODELS = {
+  model1: { name: 'Model 1', url: './model1/best.onnx' },
+  model2: { name: 'Model 2', url: './model2/best.onnx' }
+};
+// All uploaded images are letterboxed to 640 × 640 for both models.
+const INPUT_SIZE = 640;
+const CONFIDENCE = 0.35;
+const IOU_THRESHOLD = 0.45;
+const sessions = {};
+let selectedModel = 'model1';
+const $ = id => document.getElementById(id);
+const status = (message, error = false) => {
+  $('status').textContent = message;
+  $('status').className = error ? 'error' : '';
+};
+
+for (const tab of document.querySelectorAll('.tab')) {
+  tab.addEventListener('click', () => {
+    selectedModel = tab.dataset.model;
+    document.querySelectorAll('.tab').forEach(t => t.setAttribute('aria-selected', String(t === tab)));
+    $('modelPanel').setAttribute('aria-labelledby', tab.id);
+    $('heading').textContent = `${MODELS[selectedModel].name} — Magnolia Counter`;
+    $('modelPath').textContent = `Model file: ${MODELS[selectedModel].url}`;
+    $('count').textContent = '—'; $('total').textContent = '—';
+    $('gallery').replaceChildren();
+    status(`Ready to use ${MODELS[selectedModel].name}.`);
+  });
+}
+
+async function getSession(key) {
+  if (sessions[key]) return sessions[key];
+  if (!window.ort) throw new Error('ONNX Runtime did not load. Check your internet connection.');
+  // WASM files must match the ort.min.js version; CDN package resolves matching files.
+  ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/';
+  const url = MODELS[key].url;
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`Cannot load ${url} (HTTP ${response.status}). Check the folder name and filename on GitHub.`);
+  const bytes = await response.arrayBuffer();
+  sessions[key] = await ort.InferenceSession.create(bytes, { executionProviders: ['wasm'] });
+  return sessions[key];
+}
+
+function getInputSize(session) {
+  if (session.inputNames.length !== 1) throw new Error('Expected one YOLO image input.');
+  const name = session.inputNames[0];
+  const metadata = session.inputMetadata;
+  const info = Array.isArray(metadata)
+    ? (metadata.find(item => item?.name === name) ?? metadata[0])
+    : metadata?.[name];
+  const dims = info?.shape ?? info?.dimensions;
+  if (!Array.isArray(dims) || dims.length !== 4) {
+    throw new Error(`Cannot read the ONNX 4D input shape: ${JSON.stringify(dims)}.`);
+  }
+  const [batch, channels, height, width] = dims;
+  // Dynamic ONNX batch/height/width dimensions are permitted; we supply fixed 640x640.
+  // Fixed dimensions must agree with the size used by the HTML.
+  if ((typeof batch === 'number' && batch !== 1) ||
+      (typeof channels === 'number' && channels !== 3) ||
+      (typeof height === 'number' && height !== INPUT_SIZE) ||
+      (typeof width === 'number' && width !== INPUT_SIZE)) {
+    throw new Error(`ONNX model expects [${dims.join(', ')}], but this website sends [1, 3, ${INPUT_SIZE}, ${INPUT_SIZE}]. Re-export this model at imgsz=${INPUT_SIZE} with dynamic=False, or adjust HTML to match its fixed size.`);
+  }
+  return { name, height: INPUT_SIZE, width: INPUT_SIZE };
+}
+
+async function loadImage(file) {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = new Image();
+    img.src = url;
+    await img.decode();
+    return img;
+  } finally { URL.revokeObjectURL(url); }
+}
+
+// Letterbox resize maintains aspect ratio, matching common Ultralytics YOLO preprocessing.
+function makeTensor(image, width, height) {
+  const scale = Math.min(width / image.naturalWidth, height / image.naturalHeight);
+  const drawW = Math.round(image.naturalWidth * scale);
+  const drawH = Math.round(image.naturalHeight * scale);
+  const dx = Math.floor((width - drawW) / 2);
+  const dy = Math.floor((height - drawH) / 2);
+  const canvas = document.createElement('canvas');
+  canvas.width = width; canvas.height = height;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  ctx.fillStyle = 'rgb(114,114,114)';
+  ctx.fillRect(0, 0, width, height);
+  ctx.drawImage(image, dx, dy, drawW, drawH);
+  const rgba = ctx.getImageData(0, 0, width, height).data;
+  const size = width * height;
+  const chw = new Float32Array(size * 3);
+  for (let i = 0; i < size; i++) {
+    chw[i] = rgba[i * 4] / 255;
+    chw[size + i] = rgba[i * 4 + 1] / 255;
+    chw[2 * size + i] = rgba[i * 4 + 2] / 255;
+  }
+  return { tensor: new ort.Tensor('float32', chw, [1, 3, height, width]), scale, dx, dy };
+}
+
+function overlap(a, b) {
+  const x1 = Math.max(a.x1, b.x1), y1 = Math.max(a.y1, b.y1);
+  const x2 = Math.min(a.x2, b.x2), y2 = Math.min(a.y2, b.y2);
+  const intersection = Math.max(0, x2 - x1) * Math.max(0, y2 - y1);
+  const areaA = Math.max(0, a.x2 - a.x1) * Math.max(0, a.y2 - a.y1);
+  const areaB = Math.max(0, b.x2 - b.x1) * Math.max(0, b.y2 - b.y1);
+  return intersection / Math.max(areaA + areaB - intersection, 1e-9);
+}
+function nms(boxes) {
+  const kept = [];
+  boxes.sort((a, b) => b.score - a.score);
+  for (const candidate of boxes) {
+    if (kept.every(previous => candidate.cls !== previous.cls || overlap(candidate, previous) < IOU_THRESHOLD)) {
+      kept.push(candidate);
+    }
+    if (kept.length >= 3000) break;
+  }
+  return kept;
+}
+
+// Decode raw YOLOv8/YOLO11 detection output [1,4+classes,num_boxes] or [1,num_boxes,4+classes].
+// Does NOT decode YOLOv5 objectness, segmentation masks, or end-to-end NMS output.
+function parseDetections(output, size, prep, image) {
+  const shape = output.dims;
+  if (shape.length !== 3 || shape[0] !== 1) {
+    throw new Error(`Unsupported ONNX output dimensions: [${shape}]. Expected raw YOLO detection output.`);
+  }
+  let attrsFirst;
+  if (shape[1] < shape[2] && shape[1] >= 5) attrsFirst = true;
+  else if (shape[2] >= 5 && shape[2] < shape[1]) attrsFirst = false;
+  else throw new Error(`Cannot identify classes/boxes dimensions in [${shape}].`);
+  const attrs = attrsFirst ? shape[1] : shape[2];
+  const numBoxes = attrsFirst ? shape[2] : shape[1];
+  const numClasses = attrs - 4;
+  if (numClasses < 1) throw new Error('Model output does not contain YOLO class scores.');
+  const data = output.data;
+  const read = (box, attr) => attrsFirst ? data[attr * numBoxes + box] : data[box * attrs + attr];
+  const boxes = [];
+  for (let i = 0; i < numBoxes; i++) {
+    let score = -Infinity, cls = 0;
+    for (let c = 0; c < numClasses; c++) {
+      const s = read(i, 4 + c);
+      if (s > score) { score = s; cls = c; }
+    }
+    if (!Number.isFinite(score) || score < CONFIDENCE) continue;
+    const cx = read(i, 0), cy = read(i, 1), w = read(i, 2), h = read(i, 3);
+    const x1 = Math.max(0, Math.min(image.naturalWidth, (cx - w / 2 - prep.dx) / prep.scale));
+    const y1 = Math.max(0, Math.min(image.naturalHeight, (cy - h / 2 - prep.dy) / prep.scale));
+    const x2 = Math.max(0, Math.min(image.naturalWidth, (cx + w / 2 - prep.dx) / prep.scale));
+    const y2 = Math.max(0, Math.min(image.naturalHeight, (cy + h / 2 - prep.dy) / prep.scale));
+    if (x2 > x1 && y2 > y1) boxes.push({ x1, y1, x2, y2, score, cls });
+  }
+  return nms(boxes);
+}
+
+function showResult(image, fileName, boxes) {
+  const section = document.createElement('section');
+  const title = document.createElement('h3');
+  title.textContent = `${fileName}: ${boxes.length} plants detected`;
+  section.appendChild(title);
+  const preview = document.createElement('div');
+  preview.className = 'preview';
+  const canvas = document.createElement('canvas');
+  canvas.width = image.naturalWidth; canvas.height = image.naturalHeight;
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(image, 0, 0);
+  ctx.strokeStyle = '#00df69'; ctx.fillStyle = '#00df69';
+  ctx.lineWidth = Math.max(2, canvas.width / 500);
+  ctx.font = `${Math.max(14, Math.round(canvas.width / 70))}px Arial`;
+  boxes.forEach((b, i) => {
+    ctx.strokeRect(b.x1, b.y1, b.x2 - b.x1, b.y2 - b.y1);
+    ctx.fillText(`${i + 1}`, b.x1 + 3, Math.max(17, b.y1 - 5));
+  });
+  preview.appendChild(canvas);
+  section.appendChild(preview);
+  $('gallery').appendChild(section);
+}
+
+$('countBtn').addEventListener('click', async () => {
+  const files = [...$('photos').files];
+  if (!files.length) { status('Please choose at least one image.', true); return; }
+  const currentModel = selectedModel;
+  $('countBtn').disabled = true;
+  $('gallery').replaceChildren();
+  $('count').textContent = '—'; $('total').textContent = '—';
+  try {
+    status(`Loading ${MODELS[currentModel].name} from ${MODELS[currentModel].url}...`);
+    const session = await getSession(currentModel);
+    const size = getInputSize(session);
+    let total = 0;
+    for (let i = 0; i < files.length; i++) {
+      if (currentModel !== selectedModel) throw new Error('Model selection changed. Click Count Plants again.');
+      status(`Processing image ${i + 1} of ${files.length}: ${files[i].name}`);
+      const image = await loadImage(files[i]);
+      const prep = makeTensor(image, size.width, size.height);
+      const results = await session.run({ [size.name]: prep.tensor });
+      if (session.outputNames.length !== 1) {
+        throw new Error('This example expects one YOLO detection output tensor.');
+      }
+      const boxes = parseDetections(results[session.outputNames[0]], size, prep, image);
+      total += boxes.length;
+      $('count').textContent = String(boxes.length);
+      $('total').textContent = String(total);
+      showResult(image, files[i].name, boxes);
+    }
+    status(`Completed ${files.length} image(s) with ${MODELS[currentModel].name}. Total detections: ${total}.`);
+  } catch (err) {
+    console.error(err);
+    status(`Error: ${err.message}`, true);
+  } finally { $('countBtn').disabled = false; }
+});
+</script>
+</body>
+</html>
