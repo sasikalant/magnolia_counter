@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Magnolia Plant Counter | Two Models</title>
+  <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/ort.min.js"></script>
+  <style>
+    :root {font-family:system-ui,-apple-system,Segoe UI,Arial,sans-serif;color:#183024;background:#f2f7f3}
+    * {box-sizing:border-box} body{margin:0;padding:26px 16px} main{max-width:990px;margin:auto}
+    header{text-align:center;margin-bottom:24px} h1{margin:0 0 5px;font-size:clamp(1.6rem,4vw,2.2rem)}
+    header p{color:#536b5a;margin:0} .panel{background:white;border:1px solid #dce8df;border-radius:15px;padding:22px;margin-bottom:18px;box-shadow:0 3px 12px #15341c09}
+    .tabs{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px} button{font:inherit;cursor:pointer}
+    .tab{background:#eef4ee;color:#24432c;padding:12px 24px;border-radius:9px;border:1px solid #cbdccb;font-weight:650}
+    .tab.active{background:#206e3c;color:white;border-color:#206e3c} .tab:focus-visible,.action:focus-visible{outline:3px solid #88bffa;outline-offset:2px}
+    #status{border-radius:8px;background:#eef4ee;padding:12px;margin-bottom:16px;overflow-wrap:anywhere}
+    #status.error{background:#fff0ee;color:#9e2c24} #status.success{background:#e8f5e9;color:#226332}
+    .upload{display:block;border:2px dashed #9cbea5;border-radius:12px;background:#fafdfa;padding:22px;text-align:center;cursor:pointer}
+    .upload strong{display:block;margin-bottom:6px}.upload input{display:block;margin:12px auto 0;max-width:100%}
+    .options{display:flex;gap:18px;flex-wrap:wrap;align-items:center;margin:17px 0;color:#34533c}
+    .options label{display:flex;gap:7px;align-items:center}.options input[type=number]{width:76px;padding:7px;border:1px solid #b7cbbc;border-radius:6px}
+    .action{background:#206e3c;border:0;color:white;border-radius:9px;padding:12px 24px;font-weight:650}
+    .action:disabled{opacity:.5;cursor:not-allowed} .small{color:#617568;font-size:.91rem;margin:12px 0 0}
+    .result{padding:17px;border:1px solid #dce8df;border-radius:12px;margin-top:15px;background:#fff}
+    .result h3{margin:0 0 10px;font-size:1rem;overflow-wrap:anywhere} .result canvas{display:block;max-width:100%;height:auto;border-radius:8px}
+    .result .count{font-size:1.2rem;font-weight:750;color:#206e3c;margin:12px 0}
+    .result.error{border-color:#ffc3bd;color:#9e2c24;overflow-wrap:anywhere}
+    .save{display:inline-block;color:#186b36;margin-top:8px}
+    #summary{font-size:1.1rem;font-weight:700;margin-top:14px} footer{text-align:center;color:#687b6e;font-size:.86rem}
+  </style>
+</head>
+<body>
+<main>
+  <header><h1>🌿 Magnolia Plant Counter</h1><p>Run Model 1 or Model 2 on JPG / PNG drone images</p></header>
+  <section class="panel">
+    <div class="tabs" role="tablist" aria-label="Select a model">
+      <button type="button" id="model1Tab" class="tab active" role="tab" aria-selected="true">Model 1</button>
+      <button type="button" id="model2Tab" class="tab" role="tab" aria-selected="false">Model 2</button>
+    </div>
+    <div id="status" role="status">Model 1 selected. Loading model…</div>
+    <label class="upload"><strong>Choose one or more plant images</strong>JPEG / JPG / PNG<input type="file" id="files" accept="image/jpeg,image/png" multiple></label>
+    <div class="options">
+      <label>Confidence <input id="confidence" type="number" value="0.25" min="0.01" max="1" step="0.05"></label>
+      <label><input type="checkbox" id="tiling"> Tiled inference (for dense, large drone images)</label>
+    </div>
+    <button id="runBtn" class="action" disabled>Count Plants</button>
+    <p class="small">Both models receive RGB tensors with shape <strong>[1, 3, 640, 640]</strong>. Tiling divides a large photo into overlapping 640 × 640 regions and merges detections. The ONNX file itself must support this input.</p>
+  </section>
+  <section class="panel" aria-live="polite"><h2 style="margin-top:0;font-size:1.2rem">Results</h2><div id="summary">No images processed.</div><div id="results"></div></section>
+  <footer>Models: ./model1/best.onnx and ./model2/best.onnx — filenames must end in .onnx, not .onxx</footer>
+</main>
+<script>
+'use strict';
+const INPUT_SIZE = 640;
+const MODEL_PATHS = { model1: './model1/best.onnx', model2: './model2/best.onnx' };
+const $ = id => document.getElementById(id);
+const sessions = new Map();
+let selected = 'model1';
+let loadSequence = 0;
+let busy = false;
+const setStatus = (message, kind = '') => { $('status').textContent = message; $('status').className = kind; };
+function errorMessage(error) { return error && error.message ? error.message : String(error); }
+
+async function loadModel(key) {
+  const seq = ++loadSequence;
+  $('runBtn').disabled = true;
+  if (sessions.has(key)) { setStatus(`${key === 'model1' ? 'Model 1' : 'Model 2'} ready (640 × 640 input).`, 'success'); $('runBtn').disabled = busy; return; }
+  setStatus(`Loading ${key === 'model1' ? 'Model 1' : 'Model 2'} from ${MODEL_PATHS[key]} …`);
+  try {
+    // The WASM binaries and script MUST use the same ONNX Runtime Web version.
+    ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/';
+    ort.env.wasm.numThreads = 1;
+    const session = await ort.InferenceSession.create(MODEL_PATHS[key], {executionProviders: ['wasm']});
+    sessions.set(key, session);
+    if (selected !== key || seq !== loadSequence) return;
+    const name = session.inputNames[0];
+    // Different ORT versions expose inputMetadata differently. Validation is optional:
+    // inference always constructs the fixed [1,3,640,640] tensor explicitly.
+    const meta = session.inputMetadata;
+    const info = Array.isArray(meta) ? meta[0] : (meta && meta[name]);
+    const dims = info && (info.dimensions || info.dims);
+    if (Array.isArray(dims) && dims.length === 4) {
+      const fixed = n => typeof n === 'number' && n > 0;
+      if ((fixed(dims[0]) && dims[0] !== 1) || (fixed(dims[1]) && dims[1] !== 3) ||
+          (fixed(dims[2]) && dims[2] !== INPUT_SIZE) || (fixed(dims[3]) && dims[3] !== INPUT_SIZE)) {
+        setStatus(`${key} loaded, but expects input [${dims.join(', ')}] instead of [1, 3, 640, 640]. Export this model at imgsz=640, batch=1, dynamic=False, or adjust the HTML size to match its actual dimensions.`, 'error');
+        $('runBtn').disabled = true; sessions.delete(key); return;
+      }
+    }
+    setStatus(`${key === 'model1' ? 'Model 1' : 'Model 2'} loaded. Ready to count. Input: [1, 3, 640, 640].`, 'success');
+    $('runBtn').disabled = busy;
+  } catch (err) {
+    if (selected === key && seq === loadSequence) {
+      setStatus(`Unable to load ${MODEL_PATHS[key]}: ${errorMessage(err)}. Check the exact GitHub folder and file spelling.`, 'error');
+    }
+  }
+}
+function selectModel(key) {
+  if (busy) return;
+  selected = key;
+  for (const k of ['model1', 'model2']) {
+    const el = $(k + 'Tab'); el.classList.toggle('active', k === key); el.setAttribute('aria-selected', String(k === key));
+  }
+  $('summary').textContent = 'No images processed.';
+  $('results').replaceChildren();
+  loadModel(key);
+}
+$('model1Tab').addEventListener('click', () => selectModel('model1'));
+$('model2Tab').addEventListener('click', () => selectModel('model2'));
+
+async function loadImage(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Could not read image. Use a JPG or PNG file.')); };
+    img.src = url;
+  });
+}
+function tensorForRegion(img, left, top, regionWidth, regionHeight) {
+  const canvas = document.createElement('canvas'); canvas.width = INPUT_SIZE; canvas.height = INPUT_SIZE;
+  const ctx = canvas.getContext('2d', {willReadFrequently: true});
+  const scale = Math.min(INPUT_SIZE / regionWidth, INPUT_SIZE / regionHeight);
+  const drawW = regionWidth * scale, drawH = regionHeight * scale;
+  const dx = (INPUT_SIZE - drawW) / 2, dy = (INPUT_SIZE - drawH) / 2;
+  ctx.fillStyle = 'rgb(114,114,114)'; ctx.fillRect(0, 0, INPUT_SIZE, INPUT_SIZE);
+  ctx.drawImage(img, left, top, regionWidth, regionHeight, dx, dy, drawW, drawH);
+  const rgba = ctx.getImageData(0, 0, INPUT_SIZE, INPUT_SIZE).data;
+  const plane = INPUT_SIZE * INPUT_SIZE;
+  const pixels = new Float32Array(3 * plane);
+  for (let i = 0; i < plane; i++) {
+    pixels[i] = rgba[i * 4] / 255;
+    pixels[i + plane] = rgba[i * 4 + 1] / 255;
+    pixels[i + 2 * plane] = rgba[i * 4 + 2] / 255;
+  }
+  return {tensor: new ort.Tensor('float32', pixels, [1, 3, INPUT_SIZE, INPUT_SIZE]), scale, dx, dy, left, top, regionWidth, regionHeight};
+}
+function parseYOLO(output, prep, confidence) {
+  const shape = output.dims;
+  const data = output.data;
+  if (!shape || shape.length !== 3 || shape[0] !== 1) {
+    throw new Error(`Unsupported output shape [${shape ? shape.join(', ') : 'unknown'}]. This page supports raw YOLO detection outputs such as [1,5,8400] or [1,8400,5], not segmentation or end-to-end NMS exports.`);
+  }
+  let channelsFirst;
+  // Standard YOLOv8/YOLO11: [1,4+classes,boxes] or [1,boxes,4+classes]
+  if (shape[1] >= 5 && shape[1] <= 512 && shape[2] > shape[1]) channelsFirst = true;
+  else if (shape[2] >= 5 && shape[2] <= 512 && shape[1] > shape[2]) channelsFirst = false;
+  else throw new Error(`Unrecognized detection output [${shape.join(', ')}]. Expected raw YOLO output, e.g. [1,5,8400].`);
+  const channels = channelsFirst ? shape[1] : shape[2];
+  const nBoxes = channelsFirst ? shape[2] : shape[1];
+  const value = (box, ch) => channelsFirst ? data[ch * nBoxes + box] : data[box * channels + ch];
+  const detections = [];
+  for (let i = 0; i < nBoxes; i++) {
+    let bestScore = -Infinity, bestClass = 0;
+    for (let c = 4; c < channels; c++) {
+      const score = value(i, c);
+      if (score > bestScore) {bestScore = score; bestClass = c - 4;}
+    }
+    if (!(bestScore >= confidence)) continue;
+    const cx = (value(i, 0) - prep.dx) / prep.scale + prep.left;
+    const cy = (value(i, 1) - prep.dy) / prep.scale + prep.top;
+    const w = value(i, 2) / prep.scale, h = value(i, 3) / prep.scale;
+    if (![cx, cy, w, h].every(Number.isFinite) || w <= 0 || h <= 0) continue;
+    // discard detections centered in letterbox padding or outside the source region
+    if (cx < prep.left || cx > prep.left + prep.regionWidth || cy < prep.top || cy > prep.top + prep.regionHeight) continue;
+    const x1 = Math.max(prep.left, cx - w / 2), y1 = Math.max(prep.top, cy - h / 2);
+    const x2 = Math.min(prep.left + prep.regionWidth, cx + w / 2);
+    const y2 = Math.min(prep.top + prep.regionHeight, cy + h / 2);
+    if (x2 > x1 && y2 > y1) detections.push({x1,y1,x2,y2,score:bestScore,cls:bestClass});
+  }
+  return detections;
+}
+function iou(a,b) {
+  const area = Math.max(0,Math.min(a.x2,b.x2)-Math.max(a.x1,b.x1)) * Math.max(0,Math.min(a.y2,b.y2)-Math.max(a.y1,b.y1));
+  const aa = (a.x2-a.x1)*(a.y2-a.y1), bb = (b.x2-b.x1)*(b.y2-b.y1);
+  return area / Math.max(aa + bb - area, 1e-9);
+}
+function nms(boxes, threshold=0.45) {
+  boxes.sort((a,b) => b.score-a.score);
+  const keep=[];
+  for (const b of boxes) {
+    if (keep.every(k => k.cls !== b.cls || iou(k,b) < threshold)) keep.push(b);
+    if (keep.length >= 10000) break;
+  }
+  return keep;
+}
+function tilePositions(length, tile=640, overlap=128) {
+  if (length <= tile) return [0];
+  const pos=[]; for (let x=0; x < length-tile; x+=tile-overlap) pos.push(x);
+  if (pos[pos.length-1] !== length-tile) pos.push(length-tile);
+  return pos;
+}
+async function detect(img, session, confidence, useTiling, progress) {
+  const w = img.naturalWidth, h = img.naturalHeight;
+  const windows = [];
+  if (!useTiling) windows.push([0,0,w,h]);
+  else {
+    const tile = 640;
+    for (const y of tilePositions(h,tile)) for (const x of tilePositions(w,tile))
+      windows.push([x,y,Math.min(tile,w-x),Math.min(tile,h-y)]);
+  }
+  if (windows.length > 350) throw new Error(`This image requires ${windows.length} tiles, which is too many for browser processing. Disable tiling or use a smaller image.`);
+  const all=[];
+  for (let i=0; i<windows.length; i++) {
+    const prep=tensorForRegion(img,...windows[i]);
+    const result=await session.run({[session.inputNames[0]]:prep.tensor});
+    const output=result[session.outputNames[0]];
+    all.push(...parseYOLO(output,prep,confidence));
+    progress(i+1,windows.length);
+    await new Promise(r=>setTimeout(r,0));
+  }
+  return nms(all);
+}
+function resultCard(file, img, boxes, modelName) {
+  const section = document.createElement('article'); section.className='result';
+  const h3=document.createElement('h3'); h3.textContent=file.name; section.append(h3);
+  const canvas=document.createElement('canvas'); canvas.width=img.naturalWidth; canvas.height=img.naturalHeight;
+  const ctx=canvas.getContext('2d'); ctx.drawImage(img,0,0);
+  const line=Math.max(2,Math.round(Math.min(canvas.width,canvas.height)/420));
+  ctx.lineWidth=line; ctx.strokeStyle='#00ff66'; ctx.fillStyle='#00ff66';
+  for (const b of boxes) ctx.strokeRect(b.x1,b.y1,b.x2-b.x1,b.y2-b.y1);
+  section.append(canvas);
+  const count=document.createElement('div'); count.className='count'; count.textContent=`${boxes.length} plants detected · ${modelName}`; section.append(count);
+  const save=document.createElement('a'); save.className='save'; save.textContent='Download annotated image';
+  save.href=canvas.toDataURL('image/jpeg',0.9); save.download=file.name.replace(/\.[^.]+$/,'')+'_counted.jpg'; section.append(save);
+  return section;
+}
+$('runBtn').addEventListener('click', async () => {
+  const files=Array.from($('files').files || []);
+  const session=sessions.get(selected);
+  if (!files.length) {setStatus('Choose at least one JPG or PNG image first.','error');return;}
+  if (!session) {setStatus('Model not loaded. Check the model file path and try again.','error');return;}
+  const confidence=Number($('confidence').value);
+  if (!(confidence>0 && confidence<=1)) {setStatus('Confidence must be between 0.01 and 1.','error');return;}
+  busy=true; $('runBtn').disabled=true; $('model1Tab').disabled=true; $('model2Tab').disabled=true;
+  $('results').replaceChildren();
+  let total=0, success=0;
+  const modelName=selected === 'model1' ? 'Model 1' : 'Model 2';
+  for (let i=0;i<files.length;i++) {
+    const file=files[i];
+    try {
+      setStatus(`Processing ${file.name} (${i+1}/${files.length}) …`);
+      const img=await loadImage(file);
+      const boxes=await detect(img,session,confidence,$('tiling').checked,(done,n)=>setStatus(`Processing ${file.name}: ${done}/${n} inference passes …`));
+      $('results').append(resultCard(file,img,boxes,modelName)); total+=boxes.length;success++;
+    } catch(err) {
+      const p=document.createElement('p');p.className='result error';p.textContent=`${file.name}: ${errorMessage(err)}`;$('results').append(p);
+    }
+  }
+  $('summary').textContent=`${total} total detections across ${success} successfully processed image(s), ${modelName}.`;
+  if (success === files.length) setStatus('Counting completed.','success');
+  else setStatus(`${success}/${files.length} images processed. Read the error messages below.`, 'error');
+  busy=false; $('runBtn').disabled=false; $('model1Tab').disabled=false; $('model2Tab').disabled=false;
+});
+loadModel(selected);
+</script>
+</body>
+</html>
